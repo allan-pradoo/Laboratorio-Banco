@@ -20,13 +20,13 @@ if not oltp_password:
     raise ValueError("Defina OLTP_DB_PASSWORD no ambiente.")
 
 engine_origem = create_engine(
-    f"mysql+pymysql://{oltp_user}:{quote_plus(oltp_password)}@{oltp_host}:{oltp_port}/{oltp_name}"
+    f"mysql+pymysql://{oltp_user}:{quote_plus(str(oltp_password))}@{oltp_host}:{oltp_port}/{oltp_name}"
 )
 
 # ==========================================
 # CONEXÃO DESTINO (DW)
 # ==========================================
-dw_user = os.getenv("DW_DB_USER", "root")
+dw_user = os.getenv("DW_DB_USER", "Allan")
 dw_password = os.getenv("DW_DB_PASSWORD")
 dw_host = os.getenv("DW_DB_HOST", "localhost")
 dw_port = os.getenv("DW_DB_PORT", "3306")
@@ -36,11 +36,11 @@ if not dw_password:
     raise ValueError("Defina DW_DB_PASSWORD no ambiente.")
 
 engine_dw = create_engine(
-    f"mysql+pymysql://{dw_user}:{quote_plus(dw_password)}@{dw_host}:{dw_port}/{dw_name}"
+    f"mysql+pymysql://{dw_user}:{quote_plus(str(dw_password))}@{dw_host}:{dw_port}/{dw_name}"
 )
 
 # ==========================================
-# LIMPAR DW (TRUNCATE)
+# LIMPAR DW
 # ==========================================
 print("🧹 Limpando Data Warehouse...")
 
@@ -48,14 +48,11 @@ with engine_dw.connect() as conn:
     conn.execute(text("SET FOREIGN_KEY_CHECKS=0"))
 
     conn.execute(text("TRUNCATE TABLE Fato_Transacoes_Internacionais"))
-
-    conn.execute(text("TRUNCATE TABLE Dim_Bloco_Economico_Origem"))
     conn.execute(text("TRUNCATE TABLE Dim_Transporte"))
     conn.execute(text("TRUNCATE TABLE Dim_Tipo_Transacao"))
     conn.execute(text("TRUNCATE TABLE Dim_Moeda_Destino"))
     conn.execute(text("TRUNCATE TABLE Dim_Moeda_Origem"))
     conn.execute(text("TRUNCATE TABLE Dim_Produto"))
-    conn.execute(text("TRUNCATE TABLE Dim_Categoria_Produto"))
     conn.execute(text("TRUNCATE TABLE Dim_Pais_Destino"))
     conn.execute(text("TRUNCATE TABLE Dim_Pais_Origem"))
     conn.execute(text("TRUNCATE TABLE Dim_Tempo"))
@@ -117,6 +114,7 @@ df_transacoes = df_transacoes[df_transacoes['pais_origem'] != df_transacoes['pai
 
 # Fato base
 fato = pd.merge(df_transacoes, df_cambios, left_on='cambio_id', right_on='id', how='left')
+
 fato = pd.merge(
     fato,
     df_produtos[['id', 'categoria_id']].rename(columns={'id': 'id_produto_origem'}),
@@ -125,6 +123,7 @@ fato = pd.merge(
     how='left'
 )
 fato.drop(columns=['id_produto_origem'], inplace=True)
+
 fato = pd.merge(
     fato,
     df_paises[['id', 'bloco_id']].rename(columns={'id': 'id_pais_origem'}),
@@ -133,6 +132,7 @@ fato = pd.merge(
     how='left'
 )
 fato.drop(columns=['id_pais_origem'], inplace=True)
+
 fato['valor_convertido'] = fato['valor_monetario'] * fato['taxa_cambio']
 
 # ==========================================
@@ -141,21 +141,18 @@ fato['valor_convertido'] = fato['valor_monetario'] * fato['taxa_cambio']
 print("🧱 Carregando dimensões...")
 
 # Tempo
-dim_tempo = df_cambios[['data','dia','mes','nome_mes','trimestre','ano','semestre','dia_da_semana']].drop_duplicates()
+dim_tempo = df_cambios[['data', 'dia', 'mes', 'nome_mes', 'trimestre', 'ano', 'semestre', 'dia_da_semana']].copy()
+dim_tempo['data'] = pd.to_datetime(dim_tempo['data'], errors='coerce').dt.normalize()
+dim_tempo.drop_duplicates(subset=['data'], inplace=True)
 dim_tempo.to_sql('Dim_Tempo', engine_dw, if_exists='append', index=False)
 
-# Categoria
-dim_cat = df_categorias[['id','descricao']].drop_duplicates()
-dim_cat.columns = ['id_categoria','descricao_categoria']
-dim_cat.to_sql('Dim_Categoria_Produto', engine_dw, if_exists='append', index=False)
-
-# Produto
+# Produto (COM CATEGORIA)
 dim_prod = pd.merge(df_produtos, df_categorias, left_on='categoria_id', right_on='id')
 dim_prod = dim_prod[['id_x','descricao_x','codigo_ncm','descricao_y']]
 dim_prod.columns = ['id_produto','descricao_produto','codigo_ncm','categoria_produto']
 dim_prod.to_sql('Dim_Produto', engine_dw, if_exists='append', index=False)
 
-# País
+# País (COM BLOCO)
 dim_pais = pd.merge(df_paises, df_blocos, left_on='bloco_id', right_on='id')
 dim_pais = dim_pais[['id_x','nome_x','codigo_iso','nome_y']]
 dim_pais.columns = ['id_pais','nome_pais','codigo_iso','bloco']
@@ -169,41 +166,14 @@ dim_pais_destino.columns = ['id_pais_destino','nome_pais_destino','codigo_iso_de
 dim_pais_destino.to_sql('Dim_Pais_Destino', engine_dw, if_exists='append', index=False)
 
 # Moeda
-# =========================
-# MOEDA ORIGEM
-# =========================
 dim_moeda_origem = df_moedas[['id','descricao','pais']].copy()
+dim_moeda_origem.columns = ['id_moeda_origem','descricao_moeda_origem','pais_moeda_origem']
+dim_moeda_origem.to_sql('Dim_Moeda_Origem', engine_dw, if_exists='append', index=False)
 
-dim_moeda_origem.columns = [
-    'id_moeda_origem',
-    'descricao_moeda_origem',
-    'pais_moeda_origem'
-]
-
-dim_moeda_origem.to_sql(
-    'Dim_Moeda_Origem',
-    engine_dw,
-    if_exists='append',
-    index=False
-)
-
-# =========================
-# MOEDA DESTINO
-# =========================
 dim_moeda_destino = df_moedas[['id','descricao','pais']].copy()
+dim_moeda_destino.columns = ['id_moeda_destino','descricao_moeda_destino','pais_moeda_destino']
+dim_moeda_destino.to_sql('Dim_Moeda_Destino', engine_dw, if_exists='append', index=False)
 
-dim_moeda_destino.columns = [
-    'id_moeda_destino',
-    'descricao_moeda_destino',
-    'pais_moeda_destino'
-]
-
-dim_moeda_destino.to_sql(
-    'Dim_Moeda_Destino',
-    engine_dw,
-    if_exists='append',
-    index=False
-)
 # Tipo
 df_tipos.rename(columns={'id':'id_tipo_transacao','descricao':'descricao_tipo_transacao'})\
     .to_sql('Dim_Tipo_Transacao', engine_dw, if_exists='append', index=False)
@@ -212,25 +182,19 @@ df_tipos.rename(columns={'id':'id_tipo_transacao','descricao':'descricao_tipo_tr
 df_transportes.rename(columns={'id':'id_transporte','descricao':'descricao_transporte'})\
     .to_sql('Dim_Transporte', engine_dw, if_exists='append', index=False)
 
-# Bloco
-df_blocos.rename(columns={'id':'id_bloco','nome':'nome_bloco'})\
-    .to_sql('Dim_Bloco_Economico_Origem', engine_dw, if_exists='append', index=False)
-
 # ==========================================
 # FATO (COM SKs)
 # ==========================================
 print("📊 Construindo fato...")
 
-fato['data'] = pd.to_datetime(fato['data'], errors='coerce')
-dim_tempo_db = pd.read_sql("SELECT sk_tempo, data FROM Dim_Tempo", engine_dw, parse_dates=['data'])
-dim_tempo_db['data'] = pd.to_datetime(dim_tempo_db['data'], errors='coerce')
+fato['data'] = pd.to_datetime(fato['data'], errors='coerce').dt.normalize()
+
+dim_tempo_db = pd.read_sql("SELECT sk_tempo, data FROM Dim_Tempo", engine_dw)
+dim_tempo_db['data'] = pd.to_datetime(dim_tempo_db['data'], errors='coerce').dt.normalize()
 fato = pd.merge(fato, dim_tempo_db, on='data', how='left')
 
 dim_prod_db = pd.read_sql("SELECT sk_produto, id_produto FROM Dim_Produto", engine_dw)
 fato = pd.merge(fato, dim_prod_db, left_on='produto_id', right_on='id_produto', how='left')
-
-dim_cat_db = pd.read_sql("SELECT sk_categoria_produto, id_categoria FROM Dim_Categoria_Produto", engine_dw)
-fato = pd.merge(fato, dim_cat_db, left_on='categoria_id', right_on='id_categoria', how='left')
 
 dim_pais_o = pd.read_sql("SELECT sk_pais_origem, id_pais_origem FROM Dim_Pais_Origem", engine_dw)
 fato = pd.merge(fato, dim_pais_o, left_on='pais_origem', right_on='id_pais_origem', how='left')
@@ -238,21 +202,88 @@ fato = pd.merge(fato, dim_pais_o, left_on='pais_origem', right_on='id_pais_orige
 dim_pais_d = pd.read_sql("SELECT sk_pais_destino, id_pais_destino FROM Dim_Pais_Destino", engine_dw)
 fato = pd.merge(fato, dim_pais_d, left_on='pais_destino', right_on='id_pais_destino', how='left')
 
-dim_bloco_o = pd.read_sql("SELECT sk_bloco_economico_origem, id_bloco FROM Dim_Bloco_Economico_Origem", engine_dw)
-fato = pd.merge(fato, dim_bloco_o, left_on='bloco_id', right_on='id_bloco', how='left')
+dim_moeda_o = pd.read_sql("SELECT sk_moeda_origem, id_moeda_origem FROM Dim_Moeda_Origem", engine_dw)
+coluna_moeda_origem = next(
+    (c for c in ['moeda_origem_id', 'moeda_origem', 'id_moeda_origem', 'moeda_id_origem', 'moeda_id'] if c in fato.columns),
+    None
+)
+if coluna_moeda_origem is None:
+    raise KeyError(
+        "Nenhuma coluna de moeda de origem encontrada no fato. "
+        f"Colunas disponiveis: {list(fato.columns)}"
+    )
+fato = pd.merge(fato, dim_moeda_o, left_on=coluna_moeda_origem, right_on='id_moeda_origem', how='left')
+
+dim_moeda_d = pd.read_sql("SELECT sk_moeda_destino, id_moeda_destino FROM Dim_Moeda_Destino", engine_dw)
+coluna_moeda_destino = next(
+    (c for c in ['moeda_destino_id', 'moeda_destino', 'id_moeda_destino', 'moeda_id_destino'] if c in fato.columns),
+    None
+)
+if coluna_moeda_destino is None:
+    raise KeyError(
+        "Nenhuma coluna de moeda de destino encontrada no fato. "
+        f"Colunas disponiveis: {list(fato.columns)}"
+    )
+fato = pd.merge(fato, dim_moeda_d, left_on=coluna_moeda_destino, right_on='id_moeda_destino', how='left')
+
+dim_tipo = pd.read_sql("SELECT sk_tipo_transacao, id_tipo_transacao FROM Dim_Tipo_Transacao", engine_dw)
+coluna_tipo = next(
+    (c for c in ['tipo_transacao_id', 'tipo_transacao', 'tipo_id'] if c in fato.columns),
+    None
+)
+if coluna_tipo is None:
+    raise KeyError(
+        "Nenhuma coluna de tipo de transacao encontrada no fato. "
+        f"Colunas disponiveis: {list(fato.columns)}"
+    )
+fato = pd.merge(fato, dim_tipo, left_on=coluna_tipo, right_on='id_tipo_transacao', how='left')
+
+dim_transp = pd.read_sql("SELECT sk_transporte, id_transporte FROM Dim_Transporte", engine_dw)
+coluna_transporte = next(
+    (c for c in ['transporte_id', 'transporte', 'transporte_tipo_id'] if c in fato.columns),
+    None
+)
+if coluna_transporte is None:
+    raise KeyError(
+        "Nenhuma coluna de transporte encontrada no fato. "
+        f"Colunas disponiveis: {list(fato.columns)}"
+    )
+fato = pd.merge(fato, dim_transp, left_on=coluna_transporte, right_on='id_transporte', how='left')
 
 # FINAL
 fato_final = fato[[
-    'sk_tempo','sk_pais_origem','sk_pais_destino','sk_produto','sk_categoria_produto','sk_bloco_economico_origem',
-    'quantidade','valor_monetario','valor_convertido','taxa_cambio'
+    'sk_tempo',
+    'sk_pais_origem',
+    'sk_pais_destino',
+    'sk_produto',
+    'sk_moeda_origem',
+    'sk_moeda_destino',
+    'sk_tipo_transacao',
+    'sk_transporte',
+    'quantidade',
+    'valor_monetario',
+    'valor_convertido',
+    'taxa_cambio'
 ]].copy()
 
 fato_final.columns = [
-    'sk_tempo','sk_pais_origem','sk_pais_destino','sk_produto','sk_categoria_produto','sk_bloco_economico_origem',
-    'quantidade_transacionada','valor_transacao','valor_convertido','taxa_cambio_aplicada'
+    'sk_tempo',
+    'sk_pais_origem',
+    'sk_pais_destino',
+    'sk_produto',
+    'sk_moeda_origem',
+    'sk_moeda_destino',
+    'sk_tipo_transacao',
+    'sk_transporte',
+    'quantidade_transacionada',
+    'valor_transacao',
+    'valor_convertido',
+    'taxa_cambio_aplicada'
 ]
 
 fato_final['custo_transporte'] = 0.0
+
+fato_final.dropna(inplace=True)
 
 fato_final.to_sql('Fato_Transacoes_Internacionais', engine_dw, if_exists='append', index=False)
 
