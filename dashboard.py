@@ -19,6 +19,7 @@ LABELS = {
     "bloco_destino": "Bloco Economico de Destino",
     "categoria_produto": "Categoria do Produto",
     "descricao_produto": "Produto",
+    "descricao_transporte": "Modal de Transporte",
     "moeda_origem": "Moeda de Origem",
     "moeda_destino": "Moeda de Destino",
     "Periodo": "Periodo"
@@ -71,7 +72,8 @@ def get_data():
         pd.bloco_economico_destino as bloco_destino,
         mo.descricao_moeda_origem as moeda_origem,
         md.descricao_moeda_destino as moeda_destino,
-        prod.descricao_produto, prod.categoria_produto
+        prod.descricao_produto, prod.categoria_produto,
+        tr.descricao_transporte
     FROM Fato_Transacoes_Internacionais f
     LEFT JOIN Dim_Tempo t ON f.sk_tempo = t.sk_tempo
     LEFT JOIN Dim_Pais_Origem po ON f.sk_pais_origem = po.sk_pais_origem
@@ -79,6 +81,7 @@ def get_data():
     LEFT JOIN Dim_Moeda_Origem mo ON f.sk_moeda_origem = mo.sk_moeda_origem
     LEFT JOIN Dim_Moeda_Destino md ON f.sk_moeda_destino = md.sk_moeda_destino
     LEFT JOIN Dim_Produto prod ON f.sk_produto = prod.sk_produto
+    LEFT JOIN Dim_Transporte tr ON f.sk_transporte = tr.sk_transporte
     """
     return pd.read_sql(query, engine)
 
@@ -101,6 +104,9 @@ cat_sel = st.sidebar.multiselect("Categoria", categorias)
 moedas = sorted(df["moeda_origem"].dropna().unique())
 moeda_sel = st.sidebar.multiselect("Moeda de Origem", moedas)
 
+transportes = sorted(df["descricao_transporte"].dropna().unique())
+transporte_sel = st.sidebar.multiselect("Modal de Transporte", transportes)
+
 df_filtrado = df.copy()
 
 if ano_sel:
@@ -114,6 +120,9 @@ if cat_sel:
 
 if moeda_sel:
     df_filtrado = df_filtrado[df_filtrado["moeda_origem"].isin(moeda_sel)]
+
+if transporte_sel:
+    df_filtrado = df_filtrado[df_filtrado["descricao_transporte"].isin(transporte_sel)]
 
 # ==========================================
 # KPIs
@@ -193,9 +202,19 @@ if not df_chart.empty:
 if len(df_chart) > 1:
     melhor_periodo = df_chart.loc[df_chart['crescimento_%'].idxmax()]
     pior_periodo = df_chart.loc[df_chart['crescimento_%'].idxmin()]
+    periodo_crescimento = melhor_periodo[x_axis]
+    periodo_queda = pior_periodo[x_axis]
     c_g1, c_g2 = st.columns(2)
-    c_g1.metric("📈 Maior Crescimento", f"{melhor_periodo['crescimento_%']:.2f}%")
-    c_g2.metric("📉 Maior Queda", f"{pior_periodo['crescimento_%']:.2f}%")
+    c_g1.metric(
+        "📈 Maior Crescimento",
+        f"{melhor_periodo['crescimento_%']:.2f}%",
+        delta=f"Periodo: {periodo_crescimento}"
+    )
+    c_g2.metric(
+        "📉 Maior Queda",
+        f"{pior_periodo['crescimento_%']:.2f}%",
+        delta=f"Periodo: {periodo_queda}"
+    )
 
 df_sazonal = df_filtrado.groupby(['mes', 'nome_mes'])['valor_convertido'].mean().reset_index()
 df_sazonal = df_sazonal.sort_values('mes')
@@ -283,6 +302,46 @@ fig_comp = px.bar(
     labels=LABELS
 )
 st.plotly_chart(fig_comp, use_container_width=True)
+
+st.markdown("---")
+
+# ==========================================
+# TRANSPORTE
+# ==========================================
+st.header("🚚 Modal de Transporte")
+
+df_transporte = df_filtrado.groupby('descricao_transporte')[
+    ['valor_convertido', 'quantidade_transacionada']
+].sum().reset_index()
+df_transporte = df_transporte[df_transporte['descricao_transporte'].notna()]
+df_transporte = df_transporte.sort_values('valor_convertido', ascending=False)
+
+if not df_transporte.empty:
+    col_t1, col_t2 = st.columns(2)
+
+    with col_t1:
+        fig_transp_valor = px.bar(
+            df_transporte,
+            x='descricao_transporte',
+            y='valor_convertido',
+            title="Valor Movimentado por Modal de Transporte",
+            template="plotly_dark",
+            labels=LABELS
+        )
+        st.plotly_chart(fig_transp_valor, use_container_width=True)
+
+    with col_t2:
+        fig_transp_qtd = px.bar(
+            df_transporte,
+            x='descricao_transporte',
+            y='quantidade_transacionada',
+            title="Quantidade por Modal de Transporte",
+            template="plotly_dark",
+            labels=LABELS
+        )
+        st.plotly_chart(fig_transp_qtd, use_container_width=True)
+else:
+    st.info("Sem dados de transporte para os filtros selecionados.")
 
 st.markdown("---")
 
